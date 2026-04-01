@@ -12,17 +12,11 @@ public actor PostgresEventStore: EventStore {
   public typealias PersistenceID = String
 
   private let client: PostgresClient
-  private let encoder: JSONEncoder
-  private let decoder: JSONDecoder
 
   public init(
-    client: PostgresClient,
-    encoder: JSONEncoder = .init(),
-    decoder: JSONDecoder = .init()
+    client: PostgresClient
   ) {
     self.client = client
-    self.encoder = encoder
-    self.decoder = decoder
   }
 
   /// Persists an event for a given `PersistenceID`.
@@ -30,19 +24,15 @@ public actor PostgresEventStore: EventStore {
     _ event: Event,
     id: PersistenceID
   ) async throws {
-    let data = try self.encoder.encode(event)
-    guard let jsonb = String(data: data, encoding: .utf8) else {
-      throw PostgresEventStoreError.invalidData
-    }
+
+  }
+
+  public func persistEvent<Event>(_ event: Event, id: String, sequenceNumber: Int64) async throws where Event: Decodable, Event: Encodable, Event: Sendable {
+    let jsonb = JSONBEncoded(value: event)
     try await self.client.query(
       """
-      WITH next_seq AS (
-          SELECT COALESCE(MAX(sequence_number), 0) + 1 AS seq
-          FROM journal WHERE persistence_id = \(id)
-      )
       INSERT INTO journal (persistence_id, sequence_number, event)
-      SELECT \(id), seq, \(jsonb)::jsonb
-      FROM next_seq
+      VALUES (\(id), \(sequenceNumber), \(jsonb))
       """
     )
   }
@@ -53,10 +43,8 @@ public actor PostgresEventStore: EventStore {
     )
 
     var events: [Event] = []
-    for try await (jsonString) in rows.decode(String.self) {
-      let data = Data(jsonString.utf8)
-      let event = try decoder.decode(Event.self, from: data)
-      events.append(event)
+    for try await decoded in rows.decode(JSONBDecoded<Event>.self) {
+      events.append(decoded.value)
     }
     return events
   }
@@ -85,4 +73,36 @@ public actor PostgresEventStore: EventStore {
 
 public enum PostgresEventStoreError: Swift.Error {
   case invalidData
+}
+
+private struct JSONBEncoded<T: Encodable>: PostgresEncodable {
+  static var psqlType: PostgresDataType { .jsonb }
+  static var psqlFormat: PostgresFormat { .text }
+
+  let value: T
+
+  func encode(
+    into byteBuffer: inout ByteBuffer,
+    context: PostgresEncodingContext<some PostgresJSONEncoder>
+  ) throws {
+    let data = try context.jsonEncoder.encode(value)
+    byteBuffer.writeBytes(data)
+  }
+}
+
+private struct JSONBDecoded<T: Decodable & Sendable>: PostgresDecodable, Sendable {
+  static var psqlType: PostgresDataType { .jsonb }
+  static var psqlFormat: PostgresFormat { .text }
+
+  let value: T
+
+  init(
+    from buffer: inout ByteBuffer,
+    type: PostgresDataType,
+    format: PostgresFormat,
+    context: PostgresDecodingContext<some PostgresJSONDecoder>
+  ) throws {
+    _ = buffer.readInteger(as: UInt8.self)
+    self.value = try context.jsonDecoder.decode(T.self, from: buffer)
+  }
 }
