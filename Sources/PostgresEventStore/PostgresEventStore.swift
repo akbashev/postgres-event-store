@@ -20,13 +20,6 @@ public actor PostgresEventStore: EventStore {
   }
 
   /// Persists an event for a given `PersistenceID`.
-  public func persistEvent<Event: Sendable & Codable>(
-    _ event: Event,
-    id: PersistenceID
-  ) async throws {
-
-  }
-
   public func persistEvent<Event>(_ event: Event, id: String, sequenceNumber: Int64) async throws where Event: Decodable, Event: Encodable, Event: Sendable {
     let jsonb = JSONBEncoded(value: event)
     try await self.client.query(
@@ -37,9 +30,9 @@ public actor PostgresEventStore: EventStore {
     )
   }
 
-  public func eventsFor<Event: Sendable & Codable>(id: PersistenceID) async throws -> [Event] {
-    let rows = try await client.query(
-      "SELECT event FROM journal WHERE persistence_id = \(id) ORDER BY sequence_number ASC"
+  public func eventsFor<Event: Sendable & Codable>(id: PersistenceID, fromSequenceNumber: Int64) async throws -> [Event] {
+    let rows = try await self.client.query(
+      "SELECT event FROM journal WHERE persistence_id = \(id) AND sequence_number >= \(fromSequenceNumber) ORDER BY sequence_number ASC"
     )
 
     var events: [Event] = []
@@ -50,7 +43,7 @@ public actor PostgresEventStore: EventStore {
   }
 
   public func setupDatabase() async throws {
-    try await client.query(
+    try await self.client.query(
       """
       CREATE TABLE IF NOT EXISTS journal (
           persistence_id  VARCHAR(255) NOT NULL,
@@ -62,7 +55,7 @@ public actor PostgresEventStore: EventStore {
       """
     )
 
-    try await client.query(
+    try await self.client.query(
       """
       CREATE INDEX IF NOT EXISTS journal_persistence_id_idx
       ON journal (persistence_id)
