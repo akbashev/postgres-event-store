@@ -31,15 +31,11 @@ public actor PostgresEventStore: EventStore {
   }
 
   public func eventsFor<Event: Sendable & Codable>(id: PersistenceID, fromSequenceNumber: Int64) async throws -> [Event] {
-    let rows = try await self.client.query(
+    try await self.client.query(
       "SELECT event FROM journal WHERE persistence_id = \(id) AND sequence_number >= \(fromSequenceNumber) ORDER BY sequence_number ASC"
     )
-
-    var events: [Event] = []
-    for try await decoded in rows.decode(JSONBDecoded<Event>.self) {
-      events.append(decoded.value)
-    }
-    return events
+    .decode(JSONBDecoded<Event>.self)
+    .reduce(into: []) { $0.append($1.value) }
   }
 
   public func setupDatabase() async throws {
