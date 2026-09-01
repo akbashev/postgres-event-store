@@ -20,6 +20,13 @@ public actor PostgresEventStore: EventStore {
   }
 
   /// Persists an event for a given `PersistenceID`.
+  ///
+  /// A write is never retried or merged: any event already stored at
+  /// `(id, sequenceNumber)` — identical or not — fails with the raw
+  /// `PSQLError` (SQLSTATE `23505`, unique violation). The journal stays
+  /// dumb on purpose (let-it-crash); whether a timed-out write actually
+  /// landed is resolved by replaying the journal on entity recovery, not
+  /// by SQL-level idempotency.
   public func persistEvent<Event>(_ event: Event, id: String, sequenceNumber: Int64) async throws where Event: Decodable, Event: Encodable, Event: Sendable {
     let jsonb = JSONBEncoded(value: event)
     try await self.client.query(
@@ -30,12 +37,28 @@ public actor PostgresEventStore: EventStore {
     )
   }
 
-  public func eventsFor<Event: Sendable & Codable>(id: PersistenceID, fromSequenceNumber: Int64) async throws -> [Event] {
+  /// Native `EventStore.eventStream`: PostgresNIO's row sequence supplies
+  /// demand-driven iteration and adaptive, bounded row buffering.
+  public func eventStream<Event: Codable & Sendable>(
+    id: PersistenceID,
+    fromSequenceNumber: Int64 = 1
+  ) async throws -> EventStream<Event> {
     try await self.client.query(
-      "SELECT event FROM journal WHERE persistence_id = \(id) AND sequence_number >= \(fromSequenceNumber) ORDER BY sequence_number ASC"
+      """
+      SELECT sequence_number, event FROM journal
+      WHERE persistence_id = \(id) AND sequence_number >= \(fromSequenceNumber)
+      ORDER BY sequence_number ASC
+      """
     )
-    .decode(JSONBDecoded<Event>.self)
-    .reduce(into: []) { $0.append($1.value) }
+    .decode((Int64, JSONBDecoded<Event>).self)
+    .map { decoded in
+      let (sequenceNumber, jsonb) = decoded
+      return EventEnvelope(
+        persistenceID: id,
+        sequenceNumber: sequenceNumber,
+        event: jsonb.value
+      )
+    }
   }
 
   public func setupDatabase() async throws {
@@ -62,36 +85,4 @@ public actor PostgresEventStore: EventStore {
 
 public enum PostgresEventStoreError: Swift.Error {
   case invalidData
-}
-
-private struct JSONBEncoded<T: Encodable>: PostgresEncodable {
-  static var psqlType: PostgresDataType { .jsonb }
-  static var psqlFormat: PostgresFormat { .text }
-
-  let value: T
-
-  func encode(
-    into byteBuffer: inout ByteBuffer,
-    context: PostgresEncodingContext<some PostgresJSONEncoder>
-  ) throws {
-    let data = try context.jsonEncoder.encode(value)
-    byteBuffer.writeBytes(data)
-  }
-}
-
-private struct JSONBDecoded<T: Decodable & Sendable>: PostgresDecodable, Sendable {
-  static var psqlType: PostgresDataType { .jsonb }
-  static var psqlFormat: PostgresFormat { .text }
-
-  let value: T
-
-  init(
-    from buffer: inout ByteBuffer,
-    type: PostgresDataType,
-    format: PostgresFormat,
-    context: PostgresDecodingContext<some PostgresJSONDecoder>
-  ) throws {
-    _ = buffer.readInteger(as: UInt8.self)
-    self.value = try context.jsonDecoder.decode(T.self, from: buffer)
-  }
 }
