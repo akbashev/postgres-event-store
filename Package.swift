@@ -11,7 +11,7 @@ let package = Package(
   ],
   dependencies: [
     .package(url: "https://github.com/vapor/postgres-nio.git", from: "1.27.0"),
-    .package(url: "https://github.com/akbashev/cluster-event-sourcing.git", branch: "main"),
+    .package(url: "https://github.com/akbashev/cluster-event-sourcing.git", branch: "turgai-integration"),
   ],
   targets: [
     .target(
