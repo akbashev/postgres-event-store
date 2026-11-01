@@ -153,7 +153,8 @@ struct PostgresEventStoreTests {
         try await store.persistEvent(
           TestEvent(value: "event-\(sequenceNumber)"),
           id: persistenceID,
-          sequenceNumber: sequenceNumber
+          sequenceNumber: sequenceNumber,
+          tags: []
         )
       }
 
@@ -182,7 +183,8 @@ struct PostgresEventStoreTests {
         try await store.persistEvent(
           TestEvent(value: "event-\(sequenceNumber)"),
           id: persistenceID,
-          sequenceNumber: sequenceNumber
+          sequenceNumber: sequenceNumber,
+          tags: []
         )
       }
 
@@ -196,6 +198,99 @@ struct PostgresEventStoreTests {
       #expect(envelopes.map(\.persistenceID) == [persistenceID, persistenceID])
       #expect(envelopes.map(\.event.value) == ["event-2", "event-3"])
     }
+  }
+
+  @Test("Every event with a tag reads back after an offset, across entities, in the order kept")
+  func eventsByTag() async throws {
+    let (store, client) = self.makeStore()
+    let run = UUID().uuidString
+    let (first, second) = ("tagged-\(run)-a", "tagged-\(run)-b")
+    let tag = EventTag("test-\(run)")
+
+    try await withThrowingTaskGroup(of: Void.self) { group in
+      group.addTask { await client.run() }
+      defer { group.cancelAll() }
+
+      try await store.setupDatabase()
+      defer {
+        _ = try? await client.query(
+          "DELETE FROM journal WHERE persistence_id = ANY(\([first, second]))"
+        )
+      }
+
+      try await store.persistEvent(TestEvent(value: "one"), id: first, sequenceNumber: 1, tags: [tag])
+      try await store.persistEvent(TestEvent(value: "untagged"), id: second, sequenceNumber: 1, tags: [])
+      try await store.persistEvent(
+        TestEvent(value: "two"), id: second, sequenceNumber: 2, tags: [tag, EventTag("other-\(run)")])
+      try await store.persistEvent(TestEvent(value: "three"), id: first, sequenceNumber: 2, tags: [tag])
+
+      let tagged = try await Self.read(tag, after: .start, in: store)
+      #expect(tagged.map(\.event.value) == ["one", "two", "three"])
+      #expect(tagged.map(\.persistenceID) == [first, second, first])
+      #expect(tagged.map(\.sequenceNumber) == [1, 2, 2])
+      #expect(tagged.map(\.offset) == tagged.map(\.offset).sorted())
+
+      let rest = try await Self.read(tag, after: tagged[0].offset, in: store)
+      #expect(rest.map(\.event.value) == ["two", "three"])
+      #expect(try await Self.read(EventTag("other-\(run)"), after: .start, in: store).map(\.event.value) == ["two"])
+
+      // A replay's envelopes carry the same offsets.
+      var replayed: [Offset] = []
+      let stream: EventStream<TestEvent> = try await store.eventStream(id: first, fromSequenceNumber: 1)
+      for try await envelope in stream { replayed.append(envelope.offset) }
+      #expect(replayed == [tagged[0].offset, tagged[2].offset])
+    }
+  }
+
+  @Test("Writes at once keep every event, each at its own offset, in the order kept")
+  func concurrentWrites() async throws {
+    let (store, client) = self.makeStore()
+    let run = UUID().uuidString
+    let ids = (0..<5).map { "concurrent-\(run)-\($0)" }
+    let tag = EventTag("concurrent-\(run)")
+
+    try await withThrowingTaskGroup(of: Void.self) { group in
+      group.addTask { await client.run() }
+      defer { group.cancelAll() }
+
+      try await store.setupDatabase()
+      defer {
+        _ = try? await client.query("DELETE FROM journal WHERE persistence_id = ANY(\(ids))")
+      }
+
+      try await withThrowingTaskGroup(of: Void.self) { writers in
+        for id in ids {
+          writers.addTask {
+            for sequenceNumber: Int64 in 1...10 {
+              try await store.persistEvent(
+                TestEvent(value: "\(id)-\(sequenceNumber)"), id: id, sequenceNumber: sequenceNumber, tags: [tag])
+            }
+          }
+        }
+        try await writers.waitForAll()
+      }
+
+      let tagged = try await Self.read(tag, after: .start, in: store)
+      #expect(tagged.count == 50)
+      #expect(Set(tagged.map(\.offset)).count == 50)
+      for id in ids {
+        #expect(tagged.filter { $0.persistenceID == id }.map(\.sequenceNumber) == Array(1...10))
+      }
+    }
+  }
+
+  /// The test events tagged `tag` after `offset`, read whole.
+  private static func read(
+    _ tag: EventTag,
+    after offset: Offset,
+    in store: PostgresEventStore
+  ) async throws -> [EventEnvelope<TestEvent>] {
+    let events: EventStream<TestEvent> = try await store.currentEventsByTag(tag, after: offset)
+    var envelopes: [EventEnvelope<TestEvent>] = []
+    for try await envelope in events {
+      envelopes.append(envelope)
+    }
+    return envelopes
   }
 
   @Test("Persisting the same event twice fails unconditionally")
@@ -215,12 +310,12 @@ struct PostgresEventStoreTests {
       }
 
       let event = TestEvent(value: "event-1")
-      try await store.persistEvent(event, id: persistenceID, sequenceNumber: 1)
+      try await store.persistEvent(event, id: persistenceID, sequenceNumber: 1, tags: [])
 
       // Let-it-crash: even an identical rewrite is a conflict — idempotency
       // is resolved by journal replay on recovery, not by the store.
       do {
-        try await store.persistEvent(event, id: persistenceID, sequenceNumber: 1)
+        try await store.persistEvent(event, id: persistenceID, sequenceNumber: 1, tags: [])
         Issue.record("Expected a unique violation")
       } catch let error as PSQLError {
         #expect(error.serverInfo?[.sqlState] == "23505")
@@ -250,14 +345,16 @@ struct PostgresEventStoreTests {
       try await store.persistEvent(
         TestEvent(value: "original"),
         id: persistenceID,
-        sequenceNumber: 1
+        sequenceNumber: 1,
+        tags: []
       )
 
       do {
         try await store.persistEvent(
           TestEvent(value: "different"),
           id: persistenceID,
-          sequenceNumber: 1
+          sequenceNumber: 1,
+          tags: []
         )
         Issue.record("Expected a unique violation")
       } catch let error as PSQLError {
