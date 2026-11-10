@@ -1,5 +1,5 @@
-import EventSourcing
-import PostgresNIO
+public import EventSourcing
+public import PostgresNIO
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
