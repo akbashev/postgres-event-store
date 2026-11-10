@@ -1,5 +1,15 @@
-// swift-tools-version: 6.2
+// swift-tools-version: 6.4
 import PackageDescription
+
+/// The language as Swift 7 will have it, for every target.
+let swiftSettings: [SwiftSetting] = [
+  .enableUpcomingFeature("ExistentialAny"),
+  .enableUpcomingFeature("ImmutableWeakCaptures"),
+  .enableUpcomingFeature("InferIsolatedConformances"),
+  .enableUpcomingFeature("InternalImportsByDefault"),
+  .enableUpcomingFeature("MemberImportVisibility"),
+  .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+]
 
 let package = Package(
   name: "postgres-event-store",
@@ -19,13 +29,15 @@ let package = Package(
       dependencies: [
         .product(name: "PostgresNIO", package: "postgres-nio"),
         .product(name: "EventSourcing", package: "cluster-event-sourcing"),
-      ]
+      ],
+      swiftSettings: swiftSettings
     ),
     .testTarget(
       name: "PostgresEventStoreTests",
       dependencies: [
         "PostgresEventStore"
-      ]
+      ],
+      swiftSettings: swiftSettings
     ),
   ]
 )

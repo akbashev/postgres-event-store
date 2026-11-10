@@ -221,7 +221,11 @@ struct PostgresEventStoreTests {
       try await store.persistEvent(TestEvent(value: "one"), id: first, sequenceNumber: 1, tags: [tag])
       try await store.persistEvent(TestEvent(value: "untagged"), id: second, sequenceNumber: 1, tags: [])
       try await store.persistEvent(
-        TestEvent(value: "two"), id: second, sequenceNumber: 2, tags: [tag, EventTag("other-\(run)")])
+        TestEvent(value: "two"),
+        id: second,
+        sequenceNumber: 2,
+        tags: [tag, EventTag("other-\(run)")]
+      )
       try await store.persistEvent(TestEvent(value: "three"), id: first, sequenceNumber: 2, tags: [tag])
 
       let tagged = try await Self.read(tag, after: .start, in: store)
@@ -263,7 +267,11 @@ struct PostgresEventStoreTests {
           writers.addTask {
             for sequenceNumber: Int64 in 1...10 {
               try await store.persistEvent(
-                TestEvent(value: "\(id)-\(sequenceNumber)"), id: id, sequenceNumber: sequenceNumber, tags: [tag])
+                TestEvent(value: "\(id)-\(sequenceNumber)"),
+                id: id,
+                sequenceNumber: sequenceNumber,
+                tags: [tag]
+              )
             }
           }
         }

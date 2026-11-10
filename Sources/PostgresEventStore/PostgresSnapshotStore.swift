@@ -1,5 +1,5 @@
-import EventSourcing
-import PostgresNIO
+public import EventSourcing
+public import PostgresNIO
 
 /// PostgreSQL-backed snapshot storage, separate from the event journal in the
 /// same way Akka configures journal and snapshot-store plugins independently.
